@@ -1,0 +1,125 @@
+#python:
+
+# Ganymede Grooved Bright Terrain Model - tectonic resurfacing hypothesis.
+# Uses Peplinski ice and adds a wave-like surface geometry, along with regularly spaced tilted crevasses that extend to an extinct brittle/ductile transition whose depth mirrors the surface grooves.
+# This model requires that materials.py has been modified, details can be found in READ_ME.txt.
+#
+#   IMPORTANTLY (see READ_ME.txt): Assumes gprMax "soil_peplinski:" source code found in "materials.py" has been modified to:
+#   1. Remove effects of water.
+#   2. Allow direct definition of permittivity values.
+import numpy as np
+from scipy.signal import square
+from scipy.ndimage import gaussian_filter
+import matplotlib.pyplot as plt
+
+    ##### Model Parameters - edit as desired#####
+
+# Domain size in meters
+x_max = 15000  # Horizontal extent
+half_space_depth = 4000  # Vertical depth
+
+# Spatial discretization in meters
+cell = 1.5  
+
+# Add space above the surface for transmitters/receivers
+y_max = half_space_depth + 200 * cell
+
+# Amplitude and wavelength of large grooves (surface waves)
+large_amp = 100  # Amplitude in meters (~100m on Ganymede)
+T = 5000  # Wavelength in meters (~5-10km on Ganymede)
+
+# Amplitude and wavelength of small grooves (surface waves)
+small_amp = 40  # Amplitude in meters (~20-40m on Ganymede)
+t = 2000  # Wavelength in meters (~2km on Ganymede)
+
+# Desired crevasse depth, width in meters, and tilt gradient 
+depth = 3000 #~2km - ~6km on Ganymede)
+width = 5  # Crack width in meters
+tilt = 1.5  # Tilt gradient of cracks (positive for rightward tilt)
+
+##### Housekeeping #####
+
+# Set up domain, time window, and radar pulse
+time_window = 2 * y_max / c  # Time window for radar pulse based on wave travel time
+print("#domain: %s %s %s" % (x_max, y_max, cell))
+print("#dx_dy_dz: %s %s %s" % (cell, cell, cell))
+print("#time_window: %s" % time_window)
+print("#waveform: gaussiandot 1 9e6 my_pulse")  # Gaussian dot waveform, 9 MHz central frequency (as for ESA RIME and NASA REASON)
+print("#pml_cells: 20 20 0 20 20 0") #Increase PML boundary to 20 cells to minimise reflection effects
+
+#To create a plane wave, place as many transmitters and receivers as possible along top of domain.
+for i in np.arange(0, x_max, cell):
+	print("#hertzian_dipole: z %s %s 0 my_pulse" %(i, y_max-(100*cell)))
+	print("#rx: %s %s 0" %(i, y_max-(100*cell)))
+
+
+# Generate a Peplinski ice half-space
+print("#soil_peplinski: 0.5 0.5 2.0 2.66 2.9 3.1 pep_ice ")
+print("#fractal_box: 0 0 0 %s %s %s 2 1 1 1 30 pep_ice ice_box 765" % (x_max, half_space_depth, cell))
+
+##### Surface and Subsurface Wave Generation #####
+
+# Generate surface wave geometry (large and small grooves) and subsurface geometry
+num_x_points = len(np.arange(0, x_max, cell))
+wave1 = np.zeros(num_x_points)  # Surface wave
+wave2 = np.zeros(num_x_points)  # Subsurface wave
+
+for count, i in enumerate(np.arange(0, x_max, cell)):
+    wave1[count] = large_amp * np.cos(2 * np.pi * i / T) + small_amp * square(2 * np.pi * i / t)
+    wave2[count] = -1 * large_amp * np.cos(2 * np.pi * i / T)
+
+# Add random variations to the surface wave for realism
+noise1 = gaussian_filter(np.random.normal(scale=50, size=num_x_points), sigma=15)
+noise2 = np.random.normal(scale=10, size=num_x_points)
+
+# Shift waves to correct depth below surface
+wave1 += noise1 + half_space_depth - large_amp - small_amp - 50  # Surface wave
+wave2 += noise2 + half_space_depth - depth  # Subsurface wave
+
+# Visualize the surface and subsurface geometry
+plt.figure(figsize=(12, 6))
+plt.plot(np.arange(0, x_max, cell), wave1, label='Surface Wave')
+plt.plot(np.arange(0, x_max, cell), wave2, label='Subsurface Wave')
+#plt.show()  # Optional: Show the plot if needed
+
+##### Surface and Ice-Box Interaction #####
+
+# Modify the ice box between the surface wave (wave1) and the flat surface below it
+for count, i in enumerate(np.arange(0, x_max - cell, cell)):
+    print("#box: %s %s 0 %s %s %s free_space" % (i, wave1[count], i + cell, half_space_depth, cell))
+
+##### Crevasse Generation #####
+
+# Generate crevasses aligned with the subsurface wave geometry
+low_lim = -1 * depth  # Minimum position for crevasse seeding
+hi_lim = x_max  # Maximum position for crevasse seeding
+positions = np.arange(low_lim, hi_lim, t / 2)  # Regularly spaced crevasse positions
+
+# For each crevasse position, seed a crack aligned with wave2
+for i, x_c in enumerate(positions):
+    x_c += 0  # Optional: Apply shift to align with grooves
+
+    # Seed crevasse at this position on the subsurface wave (wave2)
+    y_c = wave2[int(x_c / cell)]  # Vertical start position (y-coordinate)
+
+    # Generate crack path with tilt and squiggly variations
+    y_positions = np.arange(y_c, half_space_depth, cell)
+    var_x = gaussian_filter(np.random.normal(scale=200, size=len(y_positions)), sigma=30)
+
+    # Create the crevasse layer by layer
+    for j, box_y in enumerate(y_positions):
+        box_x = x_c + j * tilt + var_x[j]  # Apply tilt and variation
+
+        # Ensure the crevasse stays within the domain
+        if box_x + width > x_max - 50 or box_x < cell or box_y < cell or box_y + cell > half_space_depth - 50:
+            continue
+
+        # Define the crack as a series of boxes (free space)
+        print("#box: %s %s 0 %s %s %s free_space" % (box_x, box_y, box_x + width / cell, box_y + cell, cell))
+
+##### Output Files #####
+
+# Save the geometry object to files "Ganymede_GBT2b.h5" and "Ganymede_GBT2b_materials.txt"
+print("#geometry_objects_write: 0 0 0 %s %s %s Ganymede_GBT2b" % (x_max, y_max, cell))
+
+#end_python:

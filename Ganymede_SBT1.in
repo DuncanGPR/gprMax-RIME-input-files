@@ -1,0 +1,157 @@
+#python:
+
+#Ganymede Smooth Bright Terrain model - cryovolcanic flooding hypothesis - with crevasses
+#Builts upon tectonic GBT model (GBT_Tectonic.in) by adding a smooth layer of relatively pure ice within the groove system.
+#
+#   IMPORTANTLY (see READ_ME.txt): Assumes gprMax "soil_peplinski:" source code found in "materials.py" has been modified to:
+#   1. Remove effects of water.
+#   2. Allow direct definition of permittivity values.
+
+import numpy as np
+from scipy.signal import square
+from scipy.ndimage import gaussian_filter
+import matplotlib.pyplot as plt
+
+        #####Model Parameters - edit as desired#####
+#domain size in meters
+x_max = 10000
+half_space_depth = 3000
+
+#spacial discretisation in meters
+cell = 1.5
+
+#Add some space above the surface for transmitters/receivers
+y_max = half_space_depth + 2000
+
+#Depth of SBT layer
+sbt_depth = 0
+sbt_height = half_space_depth - sbt_depth + cell
+
+# Amplitude and wavelength of large grooves (surface waves)
+large_amp = 100  # Amplitude in meters (~100m on Ganymede)
+T = 5000  # Wavelength in meters (~5-10km on Ganymede)
+
+# Amplitude and wavelength of small grooves (surface waves)
+small_amp = 40  # Amplitude in meters (~20-40m on Ganymede)
+t = 2000  # Wavelength in meters (~2km on Ganymede)
+
+# Desired crevasse depth, width in meters, and tilt gradient 
+depth = 3000 #~2km - ~6km on Ganymede)
+width = 5  # Crack width in meters
+tilt = 1.5  # Tilt gradient of cracks (positive for rightward tilt)
+
+        #####Housekeeping#####
+
+#Set up domain, time window and radar pulse
+time_window = 2 * y_max/c
+print("#domain: %s %s %s" %(x_max, y_max, cell))
+print("#dx_dy_dz: %s %s %s" %(cell, cell, cell))
+print("#time_window: %s" %time_window)
+print("#waveform: gaussiandot 1 9e6 my_pulse") # Gaussian dot waveform, 9 MHz central frequency (as for ESA RIME and NASA REASON)
+print("#pml_cells: 20 20 0 20 20 0") #Increase PML boundary to 20 cells to minimise reflection effects
+
+#To create a plane wave, place as many transmitters and receivers as possible along top of domain.
+for i in np.arange(0, x_max, cell):
+	print("#hertzian_dipole: z %s %s 0 my_pulse" %(i, y_max-(100*cell)))
+	print("#rx: %s %s 0" %(i, y_max-(100*cell)))
+      
+        #####Half-space#####
+#Generate a main "peplinski ice" and a purer one (cryolava)
+print("#soil_peplinski: 0.5 0.5 2.0 2.66 2.9 3.5 pep_ice ")
+print("#fractal_box: 0 0 0 %s %s %s 2 1 1 1 30 pep_ice ice_box 765" %(x_max, half_space_depth, cell))
+#Surface roughness not necessary because we add it later
+
+print("#material: 2.8 0.00005 1 0 pure_ice")
+
+        #####Surface shape#####
+#Generate a surface wave geometry and a subsurface wave geometry
+num_points = len(np.arange(0, x_max, cell))
+num_y_points = len(np.arange(0, x_max, cell))
+wave1 = np.zeros(num_points)
+wave2 = np.zeros(num_points)
+count = 0
+
+for count, i in enumerate(np.arange(0, x_max, cell)):
+    wave1[count] = large_amp * np.cos(2 * np.pi *i / T) + small_amp * square(2 * np.pi * i / t)
+    wave2[count] = -1 *large_amp * np.cos(2 * np.pi *i / T)
+       
+#Add random variations to each wave and smooth them for the surface wave
+noise1 = gaussian_filter(np.random.normal(scale=50, size=num_points), sigma = 15)
+noise2 = np.random.normal(scale=2, size=num_points)
+
+#Generate some noise for the SBT layer
+noise3 = gaussian_filter(np.random.normal(scale=5, size=num_points), sigma = 50)
+sbt_surface = noise3 + sbt_height
+
+#Place waves at the correct height in the model - wave1 must be completely below the surface of the ice box
+wave1 = wave1 + noise1 + half_space_depth - large_amp - small_amp - max(noise1)
+wave2 = wave2 + noise2 + half_space_depth - depth
+
+#Visualize the resulting geometry, if desired
+plt.figure(figsize=(12, 6))  
+plt.plot(np.arange(0, x_max, cell), wave1, label='Surface Wave')
+plt.plot(np.arange(0, x_max, cell), wave2, label='Subsurface Wave')
+plt.plot(np.arange(0, x_max, cell), sbt_surface, label='SBT')
+#plt.show()
+
+#Use the resulting geometry to modify the ice-box.
+#Set each column of cells between wave1 and the flat surface to #free_space
+count = 0
+for i in np.arange(0, x_max-cell, cell):
+	print("#box: %s %s 0 %s %s %s free_space" %(i, wave1[count], i + cell, half_space_depth, cell))
+	
+	#Add cryolava surface
+	if wave1[count] < sbt_surface[count] - cell:
+		print("#box: %s %s 0 %s %s %s pure_ice" %(i, wave1[count], i + cell, sbt_surface[count], cell))
+	count += 1
+
+        #####Fractures#####
+# Minimum and maximum seed position of the cracks
+low_lim = -1 * depth
+hi_lim = x_max
+positions = np.arange(low_lim, hi_lim, t/2)
+#for each crack position:
+for i, x_c in enumerate(positions):
+
+    shift = 0
+    x_c += shift         #To line up the cracks with the grooves, if desired
+    
+    #seed a crack at that location on wave2
+    y_c = wave2[int(x_c/cell)]						#in meters
+    
+    #Variation on crack position (squiggly-ness) and width
+    y_positions = np.arange(y_c, half_space_depth, cell)
+    var_x = gaussian_filter(np.random.normal(scale=200, size=len(y_positions)), sigma = 30)
+    
+    #create a crack between this position and the surface
+    
+    for j, box_y in enumerate(y_positions):
+        box_x = x_c + j * tilt	+ var_x[j]      #in meters
+
+        #Check the crack isn't overspilling the domain
+        
+        if box_x + width > x_max - 50:
+            continue            
+        elif box_x < cell:
+            continue            
+        elif box_y < cell:
+            continue            
+        elif box_y + cell > half_space_depth - 50:
+            continue      
+            
+        #build the crack one layer at a time    
+        #create cracks with pure ice below SBT surface level, free space above.
+        elif box_y < sbt_surface[int(x_c/cell)]:
+            print("#box: %s %s 0 %s %s %s pure_ice" %(box_x, box_y, box_x + width, box_y + cell , cell))        
+        else:
+            print("box_x: %s, box_y: %s" %(box_x, box_y)) 
+            print("#box: %s %s 0 %s %s %s free_space" %(box_x, box_y, box_x + width, box_y + cell , cell))
+
+        #####Output Files#####
+        
+#Save a geometry object to files "Ganymede_SBT1.h5" and "Ganymede_Basic_SBT1.txt"
+print("#geometry_objects_write: 0 0 0 %s %s %s Ganymede_SBT1" %(x_max, y_max, cell))
+
+#end_python:
+
+

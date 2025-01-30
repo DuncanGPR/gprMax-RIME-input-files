@@ -1,0 +1,56 @@
+#python:
+
+# Basic model of Ganymede using Peplinski soil for ice with variable permittivity.
+# This model serves as a base for adding terrain types and features.
+#
+#   IMPORTANTLY (see READ_ME.txt): Assumes gprMax "soil_peplinski:" source code found in "materials.py" has been modified to:
+#   1. Remove effects of water.
+#   2. Allow direct definition of permittivity values.
+
+import numpy as np
+
+    ##### Model Parameters - edit as desired#####
+
+# Domain size in meters
+x_max = 6000  # Horizontal extent
+half_space_depth = 10000  # Vertical depth
+
+# Spatial discretization in meters
+cell = 1.5 
+
+# Surface roughness
+var_sur = 50  
+
+# Add some space above the surface for transmitters/receivers
+y_max = half_space_depth + 200 * cell  
+
+    ##### Housekeeping #####
+
+# Set up domain, time window, and radar pulse
+time_window = 4 * y_max / c  # Time window for simulation based on signal travel time
+print("#domain: %s %s %s" % (x_max, y_max, cell))
+print("#dx_dy_dz: %s %s %s" % (cell, cell, cell))
+print("#time_window: %s" % time_window)
+print("#waveform: gaussiandot 1 9e6 my_pulse")  # Gaussian dot waveform, 9 MHz central frequency (as for ESA RIME and NASA REASON)
+print("#pml_cells: 20 20 0 20 20 0") #Increase PML boundary to 20 cells to minimise reflection effects
+
+#To create a plane wave, place as many transmitters and receivers as possible along top of domain.
+for i in np.arange(0, x_max, cell):
+	print("#hertzian_dipole: z %s %s 0 my_pulse" %(i, y_max-(100*cell)))
+	print("#rx: %s %s 0" %(i, y_max-(100*cell)))
+
+    ##### HALF SPACE #####
+
+# Generate "Peplinski ice" material with defined properties
+print("#soil_peplinski: 0.5 0.5 2.0 2.66 2.9 3.1 pep_ice")
+
+# Create a fractal box representing the ice with Peplinski parameters
+print("#fractal_box: 0 0 0 %s %s %s 2 1 1 1 30 pep_ice ice_box 765" % (x_max, half_space_depth, cell))
+
+# Add surface roughness with specified variability
+print("#add_surface_roughness: 0 %s 0 %s %s %s 1.7 1 1 %s %s ice_box 321" % (half_space_depth, x_max, half_space_depth, cell, half_space_depth - var_sur, half_space_depth + var_sur))
+
+# Save geometry object to files "Ganymede_Basic.h5" and "Ganymede_Basic_materials.txt"
+print("#geometry_objects_write: 0 0 0 %s %s %s Ganymede_Basic" % (x_max, y_max, cell))
+
+#end_python:

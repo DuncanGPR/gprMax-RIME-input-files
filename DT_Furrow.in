@@ -1,0 +1,134 @@
+#python:
+
+# Ganymede Dark Terrain with Furrow Model
+# This model simulates dark terrain on Ganymede with a furrow approximated by an inverted Ricker wavelet.
+# The model uses a "Peplinski ice" layer topped with a thin silicate regolith which varies with surface height such that it gathers in furrow floor and is absent from high terrain.
+# Adds vertical cracks at furrow floor as is hypothesised on Ganymede (and Callisto) if furrows are a result of ancient impacting into a thin, brittle crust.
+#
+#   IMPORTANTLY (see READ_ME.txt): Assumes gprMax "soil_peplinski:" source code found in "materials.py" has been modified to:
+#   1. Remove effects of water.
+#   2. Allow direct definition of permittivity values.
+
+import numpy as np
+from scipy.ndimage import gaussian_filter
+from scipy.signal import ricker
+import random as rd
+
+    ##### Model Parameters - edit as desired #####
+
+# Domain size in meters
+x_max = 20000  # Horizontal extent
+half_space_depth = 5000  # Vertical depth
+
+# Spatial discretization in meters
+cell = 1.5  
+
+# Furrow parameters (not in meters)
+height = 1000  # Furrow height (Ricker wavelet)
+width = 1500  # Furrow width
+
+# Surface roughness and large-scale feature variation
+roughness = 5  # Surface roughness magnitude
+features = 50  # Feature scale (variability)
+buffer = 2* (features + roughness)
+
+# Average thickness of regolith in meters. NB this should be thicker than is generally expected on the surface because it gathers in the furrow.
+regolith_thickness = 30  # Regolith layer thickness
+
+# Add some space above the surface for transmitters/receivers
+y_max = half_space_depth + 2000  
+
+# Number of cracks and their depth properties
+cr_num = 15  # Number of cracks
+cr_depth = 3500  # Average crack depth in meters
+cr_depth_var = 500  # Variation in crack depth
+cr_var = 500  # Variation in crack path (i.e. crack squiggleyness)
+cr_sigma = 50  # Correlation length for crack path variation
+cr_width = 10 * cell  # Crack width
+
+    ##### Housekeeping #####
+    
+# Set up domain, time window, and radar pulse
+time_window = 4 * y_max / c  
+print("#domain: %s %s %s" % (x_max, y_max, cell))
+print("#dx_dy_dz: %s %s %s" % (cell, cell, cell))
+print("#time_window: %s" % time_window)
+print("#waveform: gaussiandot 1 9e6 my_pulse")  # Gaussian dot waveform, 9 MHz central frequency (as for ESA RIME and NASA REASON)
+print("#pml_cells: 20 20 0 20 20 0") #Increase PML boundary to 20 cells to minimise reflection effects
+"""
+#To create a plane wave, place as many transmitters and receivers as possible along top of domain.
+for i in np.arange(0, x_max, cell):
+	print("#hertzian_dipole: z %s %s 0 my_pulse" %(i, y_max-(100*cell)))
+	print("#rx: %s %s 0" %(i, y_max-(100*cell)))
+"""
+    ##### Model geometry #####
+#Cracks
+# Randomize crack positions within a defined range
+low_lim = int((0.5 * x_max) - (0.5 * width))
+hi_lim = int((0.5 * x_max) + (0.5 * width))
+positions = rd.sample(range(low_lim, hi_lim), cr_num)
+cr_noise = np.random.normal(scale=cr_depth_var, size=cr_num)
+
+#Furrow
+# Furrow geometry using an inverted Ricker wavelet
+num_x_points = len(np.arange(0, x_max, cell))
+num_y_points = len(np.arange(0, y_max, cell))
+
+wavelet = ricker(num_x_points, width)
+wavelet /= np.max(np.abs(wavelet))
+wavelet /= cell  # Normalize furrow to grid scale
+furrow = -1 * height * wavelet  # Invert wavelet for furrow shape
+
+# Surface roughness with large and small scale variation
+noise1 = gaussian_filter(np.random.normal(scale=features, size=num_x_points), sigma=100)
+noise2 = gaussian_filter(np.random.normal(scale=roughness, size=num_x_points), sigma=5)
+surface = noise1 + noise2 + furrow  + half_space_depth # Surface geometry
+
+
+#Regolith
+# Regolith thickness varies inversely with surface height
+regolith = (-1 * furrow / np.max(furrow)) + 0.75
+regolith *= regolith_thickness  # Scale to regolith thickness
+
+    ##### Model Building #####
+
+#Half-space
+# Generate a Peplinski ice half-space with manual surface roughness and furrow addition
+print("#soil_peplinski: 0.5 0.5 2.0 2.66 2.9 3.5 pep_ice")
+print("#fractal_box: 0 0 0 %s %s %s 2 1 1 1 30 pep_ice ice_box 765" % (x_max, half_space_depth, cell))
+
+#Create a regolith material
+print("#material: 3.6 10e-4 1 0 reg")
+
+#Cracks
+# Generate cracks at randomized positions
+for i, x_c in enumerate(positions):
+    y_c = cr_noise[i] + half_space_depth - cr_depth  # Crack seed depth
+    var_x = gaussian_filter(np.random.normal(scale=150, size=int(y_max / 0.3)), sigma=50)  # Crack path variability
+
+    count = 0
+    for j in np.arange(y_c, half_space_depth + 50, cell):
+        box_y = y_c + count * cell
+        box_x = x_c + var_x[count]
+        count += 1
+
+        # Ensure crack stays within the domain boundaries
+        if box_x + cr_width > x_max - 50 or box_x < cell or box_y < cell or box_y > half_space_depth + 50:
+            continue
+
+        # Define the crack as a series of boxes
+        print("#box: %s %s 0 %s %s %s free_space" % (box_x, box_y, box_x + cr_width, box_y + cell, cell))
+
+#Furrow and regolith
+# Define regolith layer and free space above it for each surface point
+for count, i in enumerate(np.arange(0, x_max - cell, cell)):
+    if regolith[count] > cell:
+        print("#box: %s %s 0 %s %s %s reg" % (i, surface[count], i + cell, surface[count] + regolith[count], cell))
+    print("#box: %s %s 0 %s %s %s free_space" % (i, surface[count] + regolith[count], i + cell, half_space_depth + buffer, cell))
+
+    ##### Output Files #####
+
+# Save the geometry object to files "Ganymede_DT2.h5" and "Ganymede_DT2_materials.txt"
+print("#geometry_objects_write: 0 0 0 %s %s %s Ganymede_DT2" % (x_max, y_max, cell))
+
+#end_python:
